@@ -5,6 +5,7 @@ Site para o grupo da pelada votar depois de cada jogo. Cada um coloca os outros 
 - Qualquer pessoa com o link se cadastra (nome, foto e uma senha de 4 números) e vota. Ninguém precisa criar conta.
 - O administrador abre a votação depois do jogo, marca quem não jogou e cuida do elenco.
 - Quando o último votar, a tier list sai sozinha. Dá para baixar a imagem e mandar no grupo.
+- O admin conta os gols de cada um durante o jogo, e eles aparecem junto da foto, na tier list e na imagem.
 - Fica o histórico de todas as rodadas e uma tier list geral com a média de cada um.
 
 ## Como colocar no ar (uma vez só, uns 15 minutos)
@@ -40,7 +41,9 @@ O GitHub Pages grátis só publica repositórios públicos.
 
 ## No dia a dia
 
-- **Depois do jogo:** o admin abre a aba **Admin**, toca em **Abrir votação** e desmarca quem não jogou.
+- **Antes do jogo:** o admin toca em **Começar pelada** e desmarca quem não vai jogar.
+- **Durante o jogo:** o admin toca no **+** do jogador a cada gol (e no **−** se errar). Só o admin vê esses botões; todo mundo vê os gols junto da foto de cada um.
+- **Depois do jogo:** o admin toca em **Acabou! Abrir votação**.
 - **A galera:** abre o link, se cadastra (só na primeira vez) e vota. Quem se cadastra com a votação aberta já entra na rodada.
 - **O resultado:** quando o último votar, a tier list aparece para todo mundo. Se alguém sumir, o admin pode encerrar antes.
 - **A imagem:** no resultado, toque em **Imagem da tier list** para baixar ou compartilhar.
