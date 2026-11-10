@@ -138,7 +138,10 @@ service cloud.firestore {
         allow create, update: if owns(voter)
           && get(/databases/$(database)/documents/rounds/$(rid)).data.status == 'open'
           && !get(/databases/$(database)/documents/rounds/$(rid)).data.get('absent', []).hasAny([voter])
-          && request.resource.data.keys().hasOnly(['voter', 'ratings', 'updatedAt'])
+          && request.resource.data.keys().hasOnly(['voter', 'ratings', 'revelation', 'updatedAt'])
+          // Revelação da rodada: outra pessoa, nunca o próprio voto.
+          && (!request.resource.data.keys().hasAny(['revelation'])
+              || (request.resource.data.revelation is string && request.resource.data.revelation != voter))
           && request.resource.data.voter == voter
           && request.resource.data.ratings is map
           && request.resource.data.ratings.size() <= 80

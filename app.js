@@ -174,8 +174,11 @@ function computeResult(r) {
   const parts = participantsOf(r);
   const stats = new Map(parts.map(pid => [pid, { n: 0, sum: 0, sq: 0, dist: { S: 0, A: 0, B: 0, C: 0, D: 0 } }]));
   let voters = 0;
+  const rev = {};
   for (const [voter, ballot] of ballotsOf(r.id)) {
     if (!stats.has(voter)) continue;
+    const pick = ballot.revelation;
+    if (pick && pick !== voter && stats.has(pick)) rev[pick] = (rev[pick] || 0) + 1;
     let counted = false;
     for (const [pid, t] of Object.entries(ballot.ratings || {})) {
       if (pid === voter || !stats.has(pid) || !SCORE[t]) continue;
@@ -187,7 +190,7 @@ function computeResult(r) {
   const players = {};
   for (const pid of parts) {
     const st = stats.get(pid), p = state.players.get(pid);
-    const out = { name: p ? p.name : '', n: st.n, dist: st.dist, avg: null, sd: null, tier: null };
+    const out = { name: p ? p.name : '', n: st.n, dist: st.dist, avg: null, sd: null, tier: null, rev: rev[pid] || 0 };
     if (st.n) {
       const avg = st.sum / st.n;
       out.avg = Math.round(avg * 1000) / 1000;
@@ -214,7 +217,7 @@ function resultEntries(r) {
     const n = Math.max(0, num(s.n));
     const avg = n && Number.isFinite(+s.avg) ? +s.avg : null;
     const p = state.players.get(pid);
-    return { id: pid, name: p ? p.name : (str(s.name, 24) || 'Ex-jogador'), photo: p ? p.photo : null, goals: goalsOf(r, pid), n, dist, avg, sd: num(s.sd), tier: avg == null ? null : (TIER_KEYS.includes(s.tier) ? s.tier : tierFor(avg)) };
+    return { id: pid, name: p ? p.name : (str(s.name, 24) || 'Ex-jogador'), photo: p ? p.photo : null, goals: goalsOf(r, pid), rev: Math.max(0, num(s.rev)), n, dist, avg, sd: num(s.sd), tier: avg == null ? null : (TIER_KEYS.includes(s.tier) ? s.tier : tierFor(avg)) };
   });
 }
 // A tier list da pelada: média de cada jogador em todas as rodadas encerradas (cada rodada pesa igual).
@@ -373,10 +376,13 @@ function highlightsBlock(entries) {
   const worst = rated.length > 1 && round1(rated[rated.length - 1].avg) < round1(best.avg) ? rated[rated.length - 1] : null;
   const hot = rated.filter(e => e.n >= 2 && e.sd > 0 && e !== best && e !== worst).sort((a, b) => (b.sd - a.sd) || byName(a, b))[0] || null;
   const spread = e => { const ks = TIER_KEYS.filter(k => e.dist[k] > 0); return ks.length > 1 ? `votos de ${ks[0]} a ${ks[ks.length - 1]}` : `todos os votos ${ks[0]}`; };
+  const maxRev = Math.max(0, ...entries.map(e => e.rev || 0));
+  const revs = maxRev ? entries.filter(e => e.rev === maxRev).sort(byName) : [];
   const maxGoals = Math.max(0, ...entries.map(e => e.goals || 0));
   const scorers = maxGoals ? entries.filter(e => e.goals === maxGoals).sort(byName) : [];
   const cards = [
     scorers.length ? html`<div class="hl">${avatar(scorers[0])}<span class="hl-k">${scorers.length > 1 ? 'Artilheiros' : 'Artilheiro'}</span><span class="hl-name">${scorers.map(e => e.name).join(' e ')}</span><span class="hl-v">⚽ ${plural(maxGoals, 'gol', 'gols')}</span></div>` : '',
+    revs.length ? html`<div class="hl">${avatar(revs[0])}<span class="hl-k">Revelação da rodada</span><span class="hl-name">${revs.map(e => e.name).join(' e ')}</span><span class="hl-v">⭐ ${plural(maxRev, 'voto', 'votos')}</span></div>` : '',
     html`<div class="hl">${avatar(best)}<span class="hl-k">Craque da rodada</span><span class="hl-name">${best.name}</span><span class="hl-v">média ${fmtAvg(best.avg)}</span></div>`,
     hot ? html`<div class="hl">${avatar(hot)}<span class="hl-k">Mais polêmico</span><span class="hl-name">${hot.name}</span><span class="hl-v">${spread(hot)}</span></div>` : '',
     worst ? html`<div class="hl">${avatar(worst)}<span class="hl-k">Bagre da rodada</span><span class="hl-name">${worst.name}</span><span class="hl-v">média ${fmtAvg(worst.avg)}</span></div>` : '',
@@ -545,10 +551,11 @@ function ensureVote(r, m) {
   let v = state.vote;
   const saved = ballotsOf(r.id).get(m.id);
   if (!v || v.rid !== r.id || v.voter !== m.id) v = state.vote = { rid: r.id, voter: m.id, ratings: {}, current: null, dirty: false };
-  if (!v.dirty && saved && !Object.keys(v.ratings).length) v.ratings = { ...saved.ratings };
+  if (!v.dirty && saved && !Object.keys(v.ratings).length) { v.ratings = { ...saved.ratings }; v.revelation = saved.revelation || null; }
   const ids = new Set(othersOf(r, m.id).map(p => p.id));
   for (const pid of Object.keys(v.ratings)) if (!ids.has(pid) || !SCORE[v.ratings[pid]]) delete v.ratings[pid];
   if (v.current && !ids.has(v.current)) v.current = null;
+  if (v.revelation && !ids.has(v.revelation)) v.revelation = null;
   if (!v.current && !v.dirty) v.current = nextUnrated(r, v, null);
   return v;
 }
@@ -556,7 +563,16 @@ function rateCard(r, v) {
   const others = othersOf(r, v.voter);
   const done = others.filter(p => v.ratings[p.id]).length;
   const cur = v.current ? state.players.get(v.current) : null;
-  if (!cur) return html`<div class="card rate-card"><p class="eyebrow">${done} de ${others.length} no quadro</p><h3>Quadro completo</h3><p class="muted">Confira se está do jeito que você quer. Para mudar alguém, toque na foto.</p></div>`;
+  if (!cur) {
+    if (done < others.length) return html`<div class="card rate-card"><p class="eyebrow">${done} de ${others.length} no quadro</p><h3>Falta gente no quadro</h3><p class="muted">Toque numa foto em "Faltam" para colocar no quadro.</p></div>`;
+    return html`<div class="card rate-card">
+      <p class="eyebrow">Último passo</p>
+      <h3>Revelação da rodada</h3>
+      <p class="muted">Quem surpreendeu nesta pelada? Escolha uma pessoa.</p>
+      <div class="rev-grid">${others.map(p => html`<button type="button" class="rev ${v.revelation === p.id ? 'on' : ''}" data-act="pick-rev" data-pid="${p.id}" data-fk="rev-${p.id}" aria-pressed="${v.revelation === p.id ? 'true' : 'false'}">${avatar(p)}<span>${p.name}</span></button>`)}</div>
+      <p class="muted small">Quer mudar o tier de alguém? Toque na foto no quadro.</p>
+    </div>`;
+  }
   const pos = others.findIndex(p => p.id === cur.id) + 1;
   const mine = v.ratings[cur.id];
   return html`<div class="card rate-card">
@@ -604,7 +620,7 @@ function viewVote() {
         <p class="muted small">Toque numa foto para mudar o tier. No computador, dá para arrastar.</p>
       </div>
     </div>
-    <div class="submit-bar"><button type="button" class="btn primary big" data-act="submit-vote" data-fk="submit" ${missing ? raw('disabled') : ''}>${missing ? `Falta${missing > 1 ? 'm' : ''} ${missing}` : saved ? 'Atualizar meu voto' : 'Enviar meus votos'}</button></div>
+    <div class="submit-bar"><button type="button" class="btn primary big" data-act="submit-vote" data-fk="submit" ${missing || !v.revelation ? raw('disabled') : ''}>${missing ? `Falta${missing > 1 ? 'm' : ''} ${missing}` : !v.revelation ? 'Escolha a revelação' : saved ? 'Atualizar meu voto' : 'Enviar meus votos'}</button></div>
   </section>`;
 }
 
@@ -1120,6 +1136,12 @@ function rateFor(pid, tier) {
   if (!v.current) v.current = nextUnrated(r, v, null);
   renderNow();
 }
+function pickRevelation(pid) {
+  const v = state.vote; if (!v || !v.voter) return;
+  v.revelation = pid; v.dirty = true;
+  renderNow();
+  const s2 = $('[data-fk="submit"]'); if (s2) s2.focus({ preventScroll: true });
+}
 function focusPlayer(pid) {
   const v = state.vote; if (!v || !v.voter) return;
   v.current = pid; v.dirty = true;
@@ -1135,11 +1157,13 @@ async function submitVote() {
     if (!v.ratings[p.id]) return toast('Ainda falta colocar alguém no quadro.');
     ratings[p.id] = v.ratings[p.id];
   }
+  const revelation = v.revelation;
+  if (!revelation || !othersOf(r, m.id).some(p => p.id === revelation)) return toast('Escolha a revelação da rodada.');
   setBusy(true);
-  const res = await attempt(() => F.setDoc(F.doc(F.db, 'rounds', r.id, 'ballots', m.id), { voter: m.id, ratings, updatedAt: Date.now() }));
+  const res = await attempt(() => F.setDoc(F.doc(F.db, 'rounds', r.id, 'ballots', m.id), { voter: m.id, ratings, revelation, updatedAt: Date.now() }));
   if (!res.ok) { setBusy(false); return toast(writeMessage(res.error)); }
   state.vote = null;
-  const b = new Map(ballotsOf(r.id)); b.set(m.id, { voter: m.id, ratings }); state.ballots.set(r.id, b);
+  const b = new Map(ballotsOf(r.id)); b.set(m.id, { voter: m.id, ratings, revelation }); state.ballots.set(r.id, b);
   const live = state.rounds.get(r.id);
   if (live && live.status === 'open' && allDone(live)) {
     const patch = { status: 'closed', closedAt: Date.now(), closedBy: m.id, participants: participantsOf(live) };
@@ -1337,6 +1361,7 @@ function onClick(e) {
     case 'copy-link': copyLink(); break;
     case 'rate': rate(el.dataset.tier); break;
     case 'focus': focusPlayer(pid); break;
+    case 'pick-rev': pickRevelation(pid); break;
     case 'submit-vote': submitVote(); break;
     case 'image': imageForRound(rid); break;
     case 'image-overall': imageOverall(); break;
@@ -1421,7 +1446,7 @@ function syncBallotSubs() {
     if (state.ballotSubs.has(rid)) continue;
     const unsub = F.onSnapshot(F.collection(F.db, 'rounds', rid, 'ballots'), snap => {
       const m = new Map();
-      for (const d of snap.docs) { const b = d.data(); if (b && b.ratings && typeof b.ratings === 'object') m.set(d.id, { voter: d.id, ratings: b.ratings }); }
+      for (const d of snap.docs) { const b = d.data(); if (b && b.ratings && typeof b.ratings === 'object') m.set(d.id, { voter: d.id, ratings: b.ratings, revelation: typeof b.revelation === 'string' ? b.revelation : null }); }
       state.ballots.set(rid, m);
       if (!snap.metadata.fromCache) state.ballotsFresh.add(rid);
       maybeFillResults();

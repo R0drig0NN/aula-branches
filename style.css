@@ -314,3 +314,8 @@ button.fig:hover { border-color: var(--muted); }
 .move { position: absolute; top: -7px; right: -7px; z-index: 1; padding: 2px 6px; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font: 800 11px/1.3 var(--font-display); letter-spacing: .04em; text-transform: uppercase; box-shadow: 0 1px 3px rgba(0, 0, 0, .2); }
 .move.down { background: var(--danger); color: var(--surface); }
 .changes { font-size: 15px; }
+.rev-grid { width: 100%; display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; }
+.rev { appearance: none; display: grid; justify-items: center; gap: 5px; padding: 8px 4px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--ink); cursor: pointer; }
+.rev .av { width: 52px; height: 52px; }
+.rev span:not(.av) { font: 700 13px/1.1 var(--font-display); text-transform: uppercase; overflow-wrap: anywhere; }
+.rev.on { border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 2px var(--accent); }
