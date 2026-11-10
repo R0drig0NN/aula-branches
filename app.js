@@ -15,9 +15,13 @@ const TIERS = [
   { k: 'D', label: 'Bagre', score: 1 },
 ];
 const TIER_KEYS = TIERS.map(t => t.k);
+// O 00 fica acima do S: um jogador só, o mais escolhido como melhor do futebol na última rodada.
+const ROWS = [{ k: '00', label: 'O melhor' }, ...TIERS];
+const ROW_KEYS = ROWS.map(t => t.k);
+const rankScore = t => (t === '00' ? 6 : SCORE[t] || 0);
 const SCORE = Object.fromEntries(TIERS.map(t => [t.k, t.score]));
 // A imagem exportada repete as cores --tier-* do style.css (o canvas não lê variáveis CSS).
-const TIER_HEX = { S: '#E95656', A: '#F59B3D', B: '#F9E27A', C: '#3BA463', D: '#7A7FF0' };
+const TIER_HEX = { '00': '#D4A017', S: '#E95656', A: '#F59B3D', B: '#F9E27A', C: '#3BA463', D: '#7A7FF0' };
 
 const state = {
   phase: 'boot', // boot | config | error | ready
@@ -174,11 +178,13 @@ function computeResult(r) {
   const parts = participantsOf(r);
   const stats = new Map(parts.map(pid => [pid, { n: 0, sum: 0, sq: 0, dist: { S: 0, A: 0, B: 0, C: 0, D: 0 } }]));
   let voters = 0;
-  const rev = {};
+  const rev = {}, best = {};
   for (const [voter, ballot] of ballotsOf(r.id)) {
     if (!stats.has(voter)) continue;
     const pick = ballot.revelation;
     if (pick && pick !== voter && stats.has(pick)) rev[pick] = (rev[pick] || 0) + 1;
+    const top = ballot.best;
+    if (top && top !== voter && stats.has(top)) best[top] = (best[top] || 0) + 1;
     let counted = false;
     for (const [pid, t] of Object.entries(ballot.ratings || {})) {
       if (pid === voter || !stats.has(pid) || !SCORE[t]) continue;
@@ -190,7 +196,7 @@ function computeResult(r) {
   const players = {};
   for (const pid of parts) {
     const st = stats.get(pid), p = state.players.get(pid);
-    const out = { name: p ? p.name : '', n: st.n, dist: st.dist, avg: null, sd: null, tier: null, rev: rev[pid] || 0 };
+    const out = { name: p ? p.name : '', n: st.n, dist: st.dist, avg: null, sd: null, tier: null, rev: rev[pid] || 0, best: best[pid] || 0 };
     if (st.n) {
       const avg = st.sum / st.n;
       out.avg = Math.round(avg * 1000) / 1000;
@@ -217,7 +223,7 @@ function resultEntries(r) {
     const n = Math.max(0, num(s.n));
     const avg = n && Number.isFinite(+s.avg) ? +s.avg : null;
     const p = state.players.get(pid);
-    return { id: pid, name: p ? p.name : (str(s.name, 24) || 'Ex-jogador'), photo: p ? p.photo : null, goals: goalsOf(r, pid), rev: Math.max(0, num(s.rev)), n, dist, avg, sd: num(s.sd), tier: avg == null ? null : (TIER_KEYS.includes(s.tier) ? s.tier : tierFor(avg)) };
+    return { id: pid, name: p ? p.name : (str(s.name, 24) || 'Ex-jogador'), photo: p ? p.photo : null, goals: goalsOf(r, pid), rev: Math.max(0, num(s.rev)), best: Math.max(0, num(s.best)), n, dist, avg, sd: num(s.sd), tier: avg == null ? null : (TIER_KEYS.includes(s.tier) ? s.tier : tierFor(avg)) };
   });
 }
 // A tier list da pelada: média de cada jogador em todas as rodadas encerradas (cada rodada pesa igual).
@@ -237,23 +243,36 @@ function overallEntries(rounds = closedRounds()) {
   });
 }
 // Quem subiu, caiu ou entrou na tier list com a última rodada.
+// Quem recebeu mais escolhas de "melhor do futebol" numa rodada. Empate: maior média.
+function bestOf(r, entries) {
+  if (!r) return null;
+  const picks = new Map(resultEntries(r).filter(e => e.best > 0).map(e => [e.id, e.best]));
+  const pool = entries.filter(e => picks.has(e.id));
+  if (!pool.length) return null;
+  pool.sort((a, b) => (picks.get(b.id) - picks.get(a.id)) || ((b.avg || 0) - (a.avg || 0)) || byName(a, b));
+  return { id: pool[0].id, votes: picks.get(pool[0].id) };
+}
+function withBest(entries, r) {
+  const top = bestOf(r, entries);
+  return entries.map(e => (top && e.id === top.id ? { ...e, tier: '00', bestVotes: top.votes } : e));
+}
 function mainEntries() {
   const closed = closedRounds();
-  const before = closed.length > 1 ? new Map(overallEntries(closed.slice(1)).map(e => [e.id, e])) : null;
-  return overallEntries(closed).map(e => {
+  const before = closed.length > 1 ? new Map(withBest(overallEntries(closed.slice(1)), closed[1]).map(e => [e.id, e])) : null;
+  return withBest(overallEntries(closed), closed[0]).map(e => {
     let move = null;
     if (before) {
       const b = before.get(e.id);
       if (!b) move = { kind: 'new' };
-      else if (SCORE[e.tier] !== SCORE[b.tier]) move = { kind: SCORE[e.tier] > SCORE[b.tier] ? 'up' : 'down', from: b.tier };
+      else if (rankScore(e.tier) !== rankScore(b.tier)) move = { kind: rankScore(e.tier) > rankScore(b.tier) ? 'up' : 'down', from: b.tier };
     }
     return { ...e, move };
   });
 }
 function groupRows(entries) {
-  const rows = { S: [], A: [], B: [], C: [], D: [] };
+  const rows = { '00': [], S: [], A: [], B: [], C: [], D: [] };
   for (const e of entries) if (e.tier && rows[e.tier]) rows[e.tier].push(e);
-  for (const k of TIER_KEYS) rows[k].sort((a, b) => (b.avg - a.avg) || byName(a, b));
+  for (const k of ROW_KEYS) rows[k].sort((a, b) => (b.avg - a.avg) || byName(a, b));
   return rows;
 }
 function playerHistory(pid) {
@@ -285,14 +304,14 @@ function goalBadge(n) {
   return n > 0 ? html`<span class="goals" aria-label="${plural(n, 'gol', 'gols')}">⚽${n > 1 ? ' ' + n : ''}</span>` : '';
 }
 function board(rows, extraClass = '') {
-  return html`<div class="board ${extraClass}">${TIERS.map(t => html`
+  return html`<div class="board ${extraClass}">${ROWS.map(t => html`
     <div class="tier" style="${tierVar(t.k)}" role="group" aria-label="Tier ${t.k}, ${t.label}: ${plural(rows[t.k].length, 'jogador', 'jogadores')}">
       <div class="tier-label"><span>${t.k}</span><small>${t.label}</small></div>
-      <div class="tier-items">${rows[t.k].map(e => chip(e))}</div>
+      <div class="tier-items">${rows[t.k].map(e => chip(e))}${t.k === '00' && !rows[t.k].length && !extraClass ? html`<p class="bench-done">Ninguém ainda: sai da escolha de melhor do futebol.</p>` : ''}</div>
     </div>`)}</div>`;
 }
-const emptyBoard = () => board({ S: [], A: [], B: [], C: [], D: [] }, 'preview');
-const RULE = html`<p class="rule">Cada voto vale <b>S 5 · A 4 · B 3 · C 2 · D 1</b>. A média de cada um decide o tier: S a partir de 4,5, A de 3,5, B de 2,5, C de 1,5. Na tier list da pelada, vale a média de todas as rodadas.</p>`;
+const emptyBoard = () => board({ '00': [], S: [], A: [], B: [], C: [], D: [] }, 'preview');
+const RULE = html`<p class="rule">Cada voto vale <b>S 5 · A 4 · B 3 · C 2 · D 1</b>. A média de cada um decide o tier: S a partir de 4,5, A de 3,5, B de 2,5, C de 1,5. Na tier list da pelada, vale a média de todas as rodadas. O 00 é quem recebeu mais escolhas de melhor do futebol na última rodada.</p>`;
 
 function howItWorks() {
   return html`<ol class="steps">
@@ -369,6 +388,12 @@ function playingCard(r) {
 }
 const roundCard = r => (r.status === 'playing' ? playingCard(r) : openRoundCard(r));
 
+function bestCard(entries) {
+  const max = Math.max(0, ...entries.map(e => e.best || 0));
+  if (!max) return '';
+  const tops = entries.filter(e => e.best === max).sort(byName);
+  return html`<div class="hl">${avatar(tops[0])}<span class="hl-k">O melhor do futebol (00)</span><span class="hl-name">${tops.map(e => e.name).join(' e ')}</span><span class="hl-v">👑 ${plural(max, 'voto', 'votos')}${tops.length > 1 ? ' cada, desempate pela média' : ''}</span></div>`;
+}
 function highlightsBlock(entries) {
   const rated = entries.filter(e => e.n > 0).sort((a, b) => (b.avg - a.avg) || byName(a, b));
   if (!rated.length) return '';
@@ -382,6 +407,7 @@ function highlightsBlock(entries) {
   const scorers = maxGoals ? entries.filter(e => e.goals === maxGoals).sort(byName) : [];
   const cards = [
     scorers.length ? html`<div class="hl">${avatar(scorers[0])}<span class="hl-k">${scorers.length > 1 ? 'Artilheiros' : 'Artilheiro'}</span><span class="hl-name">${scorers.map(e => e.name).join(' e ')}</span><span class="hl-v">⚽ ${plural(maxGoals, 'gol', 'gols')}</span></div>` : '',
+    bestCard(entries),
     revs.length ? html`<div class="hl">${avatar(revs[0])}<span class="hl-k">Revelação da rodada</span><span class="hl-name">${revs.map(e => e.name).join(' e ')}</span><span class="hl-v">⭐ ${plural(maxRev, 'voto', 'votos')}</span></div>` : '',
     html`<div class="hl">${avatar(best)}<span class="hl-k">Craque da rodada</span><span class="hl-name">${best.name}</span><span class="hl-v">média ${fmtAvg(best.avg)}</span></div>`,
     hot ? html`<div class="hl">${avatar(hot)}<span class="hl-k">Mais polêmico</span><span class="hl-name">${hot.name}</span><span class="hl-v">${spread(hot)}</span></div>` : '',
@@ -421,7 +447,7 @@ function resultBlock(r, { detail = false, eyebrow = '' } = {}) {
       </div>
       <button type="button" class="btn" data-act="image" data-rid="${r.id}">${ICON_DL}Imagem da tier list</button>
     </div>
-    ${board(groupRows(rated))}
+    ${board(groupRows(withBest(rated, r)))}
     ${unrated.length ? html`<p class="muted small">Sem votos nesta rodada: ${unrated.map(e => e.name).join(', ')}.</p>` : ''}
     ${highlightsBlock(entries)}
     ${detail ? distBlock(entries) : html`<a class="more" href="#rodada-${r.id}">Ver como cada um foi votado</a>`}
@@ -453,7 +479,7 @@ function mainTierBlock() {
   const last = closed[0];
   const entries = mainEntries();
   const moved = entries.filter(e => e.move).sort(byName);
-  const said = moved.map(e => e.move.kind === 'new' ? `${e.name} entrou no ${e.tier}` : `${e.name} ${e.move.kind === 'up' ? 'subiu' : 'caiu'} para ${e.tier}`);
+  const said = moved.map(e => e.tier === '00' ? `${e.name} virou o 00` : e.move.kind === 'new' ? `${e.name} entrou no ${e.tier}` : `${e.name} ${e.move.kind === 'up' ? 'subiu' : 'caiu'} para ${e.tier}`);
   return html`<section class="result">
     <div class="result-head">
       <div class="result-title"><p class="eyebrow">A tier list da pelada</p><h2>Tier list</h2>
@@ -551,11 +577,12 @@ function ensureVote(r, m) {
   let v = state.vote;
   const saved = ballotsOf(r.id).get(m.id);
   if (!v || v.rid !== r.id || v.voter !== m.id) v = state.vote = { rid: r.id, voter: m.id, ratings: {}, current: null, dirty: false };
-  if (!v.dirty && saved && !Object.keys(v.ratings).length) { v.ratings = { ...saved.ratings }; v.revelation = saved.revelation || null; }
+  if (!v.dirty && saved && !Object.keys(v.ratings).length) { v.ratings = { ...saved.ratings }; v.revelation = saved.revelation || null; v.best = saved.best || null; }
   const ids = new Set(othersOf(r, m.id).map(p => p.id));
   for (const pid of Object.keys(v.ratings)) if (!ids.has(pid) || !SCORE[v.ratings[pid]]) delete v.ratings[pid];
   if (v.current && !ids.has(v.current)) v.current = null;
   if (v.revelation && !ids.has(v.revelation)) v.revelation = null;
+  if (v.best && !ids.has(v.best)) v.best = null;
   if (!v.current && !v.dirty) v.current = nextUnrated(r, v, null);
   return v;
 }
@@ -566,7 +593,10 @@ function rateCard(r, v) {
   if (!cur) {
     if (done < others.length) return html`<div class="card rate-card"><p class="eyebrow">${done} de ${others.length} no quadro</p><h3>Falta gente no quadro</h3><p class="muted">Toque numa foto em "Faltam" para colocar no quadro.</p></div>`;
     return html`<div class="card rate-card">
-      <p class="eyebrow">Último passo</p>
+      <p class="eyebrow">Últimos passos</p>
+      <h3>O melhor do futebol</h3>
+      <p class="muted">Quem é o melhor da pelada? O mais escolhido vira o 00 da tier list.</p>
+      <div class="rev-grid">${others.map(p => html`<button type="button" class="rev ${v.best === p.id ? 'on' : ''}" data-act="pick-best" data-pid="${p.id}" data-fk="best-${p.id}" aria-pressed="${v.best === p.id ? 'true' : 'false'}">${avatar(p)}<span>${p.name}</span></button>`)}</div>
       <h3>Revelação da rodada</h3>
       <p class="muted">Quem surpreendeu nesta pelada? Escolha uma pessoa.</p>
       <div class="rev-grid">${others.map(p => html`<button type="button" class="rev ${v.revelation === p.id ? 'on' : ''}" data-act="pick-rev" data-pid="${p.id}" data-fk="rev-${p.id}" aria-pressed="${v.revelation === p.id ? 'true' : 'false'}">${avatar(p)}<span>${p.name}</span></button>`)}</div>
@@ -620,7 +650,7 @@ function viewVote() {
         <p class="muted small">Toque numa foto para mudar o tier. No computador, dá para arrastar.</p>
       </div>
     </div>
-    <div class="submit-bar"><button type="button" class="btn primary big" data-act="submit-vote" data-fk="submit" ${missing || !v.revelation ? raw('disabled') : ''}>${missing ? `Falta${missing > 1 ? 'm' : ''} ${missing}` : !v.revelation ? 'Escolha a revelação' : saved ? 'Atualizar meu voto' : 'Enviar meus votos'}</button></div>
+    <div class="submit-bar"><button type="button" class="btn primary big" data-act="submit-vote" data-fk="submit" ${missing || !v.revelation || !v.best ? raw('disabled') : ''}>${missing ? `Falta${missing > 1 ? 'm' : ''} ${missing}` : !v.best ? 'Escolha o melhor (00)' : !v.revelation ? 'Escolha a revelação' : saved ? 'Atualizar meu voto' : 'Enviar meus votos'}</button></div>
   </section>`;
 }
 
@@ -1136,6 +1166,11 @@ function rateFor(pid, tier) {
   if (!v.current) v.current = nextUnrated(r, v, null);
   renderNow();
 }
+function pickBest(pid) {
+  const v = state.vote; if (!v || !v.voter) return;
+  v.best = pid; v.dirty = true;
+  renderNow();
+}
 function pickRevelation(pid) {
   const v = state.vote; if (!v || !v.voter) return;
   v.revelation = pid; v.dirty = true;
@@ -1159,11 +1194,13 @@ async function submitVote() {
   }
   const revelation = v.revelation;
   if (!revelation || !othersOf(r, m.id).some(p => p.id === revelation)) return toast('Escolha a revelação da rodada.');
+  const best = v.best;
+  if (!best || !othersOf(r, m.id).some(p => p.id === best)) return toast('Escolha o melhor do futebol.');
   setBusy(true);
-  const res = await attempt(() => F.setDoc(F.doc(F.db, 'rounds', r.id, 'ballots', m.id), { voter: m.id, ratings, revelation, updatedAt: Date.now() }));
+  const res = await attempt(() => F.setDoc(F.doc(F.db, 'rounds', r.id, 'ballots', m.id), { voter: m.id, ratings, revelation, best, updatedAt: Date.now() }));
   if (!res.ok) { setBusy(false); return toast(writeMessage(res.error)); }
   state.vote = null;
-  const b = new Map(ballotsOf(r.id)); b.set(m.id, { voter: m.id, ratings, revelation }); state.ballots.set(r.id, b);
+  const b = new Map(ballotsOf(r.id)); b.set(m.id, { voter: m.id, ratings, revelation, best }); state.ballots.set(r.id, b);
   const live = state.rounds.get(r.id);
   if (live && live.status === 'open' && allDone(live)) {
     const patch = { status: 'closed', closedAt: Date.now(), closedBy: m.id, participants: participantsOf(live) };
@@ -1210,8 +1247,8 @@ async function drawTierPng({ title, subtitle, entries }) {
   const W = 1080, PAD = 40, LABEL = 132, CELL = 112, CAP = 36, GAP = 16, ROWGAP = 6, HEAD = 196, FOOT = 78;
   const itemsX = PAD + LABEL, itemsW = W - PAD - itemsX;
   const perLine = Math.max(1, Math.floor((itemsW - GAP) / (CELL + GAP)));
-  const heights = TIER_KEYS.map(k => { const lines = Math.max(1, Math.ceil(rows[k].length / perLine)); return lines * (CELL + CAP) + (lines + 1) * GAP - 6; });
-  const H = HEAD + PAD / 2 + heights.reduce((a, b) => a + b, 0) + ROWGAP * (TIER_KEYS.length - 1) + FOOT;
+  const heights = ROW_KEYS.map(k => { const lines = Math.max(1, Math.ceil(rows[k].length / perLine)); return lines * (CELL + CAP) + (lines + 1) * GAP - 6; });
+  const H = HEAD + PAD / 2 + heights.reduce((a, b) => a + b, 0) + ROWGAP * (ROW_KEYS.length - 1) + FOOT;
   const c = document.createElement('canvas'); c.width = W; c.height = H;
   const ctx = c.getContext('2d');
   const imgs = await loadImages(entries);
@@ -1230,12 +1267,12 @@ async function drawTierPng({ title, subtitle, entries }) {
   ctx.font = `600 24px ${BODY}`; ctx.fillStyle = 'rgba(255,255,255,.88)'; ctx.fillText(fitText(ctx, subtitle, W - PAD * 2 - 190), PAD, 166);
 
   let y = HEAD + PAD / 2;
-  TIER_KEYS.forEach((k, i) => {
+  ROW_KEYS.forEach((k, i) => {
     const h = heights[i];
     ctx.fillStyle = TIER_HEX[k]; rrect(ctx, PAD, y, LABEL - 8, h, 10); ctx.fill();
     ctx.fillStyle = '#1A1712'; ctx.textAlign = 'center';
     ctx.font = `800 70px ${DISPLAY}`; ctx.fillText(k, PAD + (LABEL - 8) / 2, y + h / 2 + 12);
-    ctx.font = `700 16px ${DISPLAY}`; ctx.fillText(TIERS[i].label.toUpperCase(), PAD + (LABEL - 8) / 2, y + h / 2 + 38);
+    ctx.font = `700 16px ${DISPLAY}`; ctx.fillText(ROWS[i].label.toUpperCase(), PAD + (LABEL - 8) / 2, y + h / 2 + 38);
     ctx.textAlign = 'left';
     ctx.fillStyle = '#18251D'; rrect(ctx, itemsX, y, itemsW, h, 10); ctx.fill();
     rows[k].forEach((e, j) => {
@@ -1283,7 +1320,7 @@ async function drawTierPng({ title, subtitle, entries }) {
     y += h + ROWGAP;
   });
   ctx.fillStyle = '#93A99A'; ctx.font = `600 19px ${BODY}`;
-  ctx.fillText('Cada voto vale S 5 · A 4 · B 3 · C 2 · D 1. O tier sai da média.', PAD, H - FOOT / 2 + 6);
+  ctx.fillText('Cada voto vale S 5 · A 4 · B 3 · C 2 · D 1. O tier sai da média. O 00 é o mais escolhido como melhor.', PAD, H - FOOT / 2 + 6);
   return new Promise((res, rej) => c.toBlob(b => (b ? res(b) : rej(new Error('toBlob'))), 'image/png'));
 }
 async function showImage(opts) {
@@ -1362,6 +1399,7 @@ function onClick(e) {
     case 'rate': rate(el.dataset.tier); break;
     case 'focus': focusPlayer(pid); break;
     case 'pick-rev': pickRevelation(pid); break;
+    case 'pick-best': pickBest(pid); break;
     case 'submit-vote': submitVote(); break;
     case 'image': imageForRound(rid); break;
     case 'image-overall': imageOverall(); break;
@@ -1446,7 +1484,7 @@ function syncBallotSubs() {
     if (state.ballotSubs.has(rid)) continue;
     const unsub = F.onSnapshot(F.collection(F.db, 'rounds', rid, 'ballots'), snap => {
       const m = new Map();
-      for (const d of snap.docs) { const b = d.data(); if (b && b.ratings && typeof b.ratings === 'object') m.set(d.id, { voter: d.id, ratings: b.ratings, revelation: typeof b.revelation === 'string' ? b.revelation : null }); }
+      for (const d of snap.docs) { const b = d.data(); if (b && b.ratings && typeof b.ratings === 'object') m.set(d.id, { voter: d.id, ratings: b.ratings, revelation: typeof b.revelation === 'string' ? b.revelation : null, best: typeof b.best === 'string' ? b.best : null }); }
       state.ballots.set(rid, m);
       if (!snap.metadata.fromCache) state.ballotsFresh.add(rid);
       maybeFillResults();
