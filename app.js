@@ -136,6 +136,15 @@ const roundList = () => [...state.rounds.values()].sort((a, b) => b.createdAt - 
 const openRounds = () => roundList().filter(r => r.status === 'open');
 const closedRounds = () => roundList().filter(r => r.status === 'closed');
 const currentOpenRound = () => openRounds()[0] || null;
+// A rodada em andamento: "playing" (pelada rolando, contando gols) ou "open" (votação aberta).
+const currentRound = () => roundList().find(r => r.status !== 'closed') || null;
+const goalsOf = (r, pid) => (r && r.goals && r.goals[pid]) || 0;
+function goalsMap(g) {
+  const out = {};
+  if (g && typeof g === 'object') for (const [k, v] of Object.entries(g)) { const n = Math.max(0, Math.floor(Number(v) || 0)); if (n) out[k] = n; }
+  return out;
+}
+const totalGoals = pid => roundList().reduce((s, r) => s + goalsOf(r, pid), 0);
 const ballotsOf = rid => state.ballots.get(rid) || new Map();
 
 // Quem participa: numa rodada aberta, todo o elenco menos quem o admin marcou como fora.
@@ -205,22 +214,37 @@ function resultEntries(r) {
     const n = Math.max(0, num(s.n));
     const avg = n && Number.isFinite(+s.avg) ? +s.avg : null;
     const p = state.players.get(pid);
-    return { id: pid, name: p ? p.name : (str(s.name, 24) || 'Ex-jogador'), photo: p ? p.photo : null, n, dist, avg, sd: num(s.sd), tier: avg == null ? null : (TIER_KEYS.includes(s.tier) ? s.tier : tierFor(avg)) };
+    return { id: pid, name: p ? p.name : (str(s.name, 24) || 'Ex-jogador'), photo: p ? p.photo : null, goals: goalsOf(r, pid), n, dist, avg, sd: num(s.sd), tier: avg == null ? null : (TIER_KEYS.includes(s.tier) ? s.tier : tierFor(avg)) };
   });
 }
-function overallEntries() {
+// A tier list da pelada: média de cada jogador em todas as rodadas encerradas (cada rodada pesa igual).
+function overallEntries(rounds = closedRounds()) {
   const acc = new Map();
-  for (const r of closedRounds()) {
+  for (const r of rounds) {
     for (const e of resultEntries(r)) {
       if (!e.n) continue;
-      const a = acc.get(e.id) || { sum: 0, rounds: 0, e };
-      a.sum += e.avg; a.rounds++;
+      const a = acc.get(e.id) || { sum: 0, rounds: 0, goals: 0, e };
+      a.sum += e.avg; a.rounds++; a.goals += e.goals;
       acc.set(e.id, a);
     }
   }
-  return [...acc.values()].map(({ sum, rounds, e }) => {
+  return [...acc.values()].filter(a => state.players.has(a.e.id)).map(({ sum, rounds, goals, e }) => {
     const avg = sum / rounds;
-    return { id: e.id, name: e.name, photo: e.photo, avg, n: rounds, tier: tierFor(avg), sub: plural(rounds, 'rodada', 'rodadas') };
+    return { id: e.id, name: e.name, photo: e.photo, goals, avg, n: rounds, tier: tierFor(avg), sub: plural(rounds, 'rodada', 'rodadas') };
+  });
+}
+// Quem subiu, caiu ou entrou na tier list com a última rodada.
+function mainEntries() {
+  const closed = closedRounds();
+  const before = closed.length > 1 ? new Map(overallEntries(closed.slice(1)).map(e => [e.id, e])) : null;
+  return overallEntries(closed).map(e => {
+    let move = null;
+    if (before) {
+      const b = before.get(e.id);
+      if (!b) move = { kind: 'new' };
+      else if (SCORE[e.tier] !== SCORE[b.tier]) move = { kind: SCORE[e.tier] > SCORE[b.tier] ? 'up' : 'down', from: b.tier };
+    }
+    return { ...e, move };
   });
 }
 function groupRows(entries) {
@@ -247,7 +271,15 @@ function chip(e, mine, sel) {
   if (mine) {
     return html`<button type="button" class="chip ${sel === e.id ? 'sel' : ''}" data-act="focus" data-pid="${e.id}" data-fk="chip-${e.id}" draggable="true" data-drag-pid="${e.id}" aria-label="${e.name}: ${e.tier ? 'tier ' + e.tier : 'sem tier'}. Toque para mudar.">${avatar(e)}<span class="cap">${e.name}</span></button>`;
   }
-  return html`<figure class="chip">${avatar(e)}<figcaption class="cap">${e.name}${e.sub ? html`<small>${e.sub}</small>` : ''}</figcaption>${e.avg != null ? html`<span class="score" aria-label="média ${fmtAvg(e.avg)}">${fmtAvg(e.avg)}</span>` : ''}</figure>`;
+  return html`<figure class="chip">${avatar(e)}${goalBadge(e.goals)}${moveBadge(e.move)}<figcaption class="cap">${e.name}${e.sub ? html`<small>${e.sub}</small>` : ''}</figcaption>${e.avg != null ? html`<span class="score" aria-label="média ${fmtAvg(e.avg)}">${fmtAvg(e.avg)}</span>` : ''}</figure>`;
+}
+function moveBadge(m) {
+  if (!m) return '';
+  if (m.kind === 'new') return html`<span class="move new">novo</span>`;
+  return html`<span class="move ${m.kind}" aria-label="${m.kind === 'up' ? 'subiu' : 'caiu'} do ${m.from}">${m.kind === 'up' ? '▲' : '▼'}</span>`;
+}
+function goalBadge(n) {
+  return n > 0 ? html`<span class="goals" aria-label="${plural(n, 'gol', 'gols')}">⚽${n > 1 ? ' ' + n : ''}</span>` : '';
 }
 function board(rows, extraClass = '') {
   return html`<div class="board ${extraClass}">${TIERS.map(t => html`
@@ -257,14 +289,14 @@ function board(rows, extraClass = '') {
     </div>`)}</div>`;
 }
 const emptyBoard = () => board({ S: [], A: [], B: [], C: [], D: [] }, 'preview');
-const RULE = html`<p class="rule">Cada voto vale <b>S 5 · A 4 · B 3 · C 2 · D 1</b>. A média de cada um decide o tier: S a partir de 4,5, A de 3,5, B de 2,5, C de 1,5.</p>`;
+const RULE = html`<p class="rule">Cada voto vale <b>S 5 · A 4 · B 3 · C 2 · D 1</b>. A média de cada um decide o tier: S a partir de 4,5, A de 3,5, B de 2,5, C de 1,5. Na tier list da pelada, vale a média de todas as rodadas.</p>`;
 
 function howItWorks() {
   return html`<ol class="steps">
     <li><span><b>Cadastre-se</b>Nome, foto e uma senha de 4 números, para entrar de outro celular se precisar.</span></li>
     <li><span><b>Acabou o jogo? Abre a votação</b>Quem abre é o administrador. Só vota e recebe voto quem jogou.</span></li>
     <li><span><b>Todo mundo vota</b>Cada um coloca os outros em S, A, B, C ou D. Ninguém vota em si mesmo, e a página não mostra quem votou em quem.</span></li>
-    <li><span><b>Sai a tier list</b>Quando o último votar, a média dos votos monta a tier list. Dá para mandar a imagem no grupo.</span></li>
+    <li><span><b>A tier list atualiza</b>Quando o último votar, os votos da rodada entram na conta e a tier list da pelada é atualizada. Dá para mandar a imagem no grupo.</span></li>
   </ol>`;
 }
 function joinActions(big = true) {
@@ -272,12 +304,13 @@ function joinActions(big = true) {
   return html`<div class="actions"><button type="button" class="btn primary ${big ? 'big' : ''}" data-act="register">Me cadastrar</button><button type="button" class="btn" data-act="claim">Já tenho cadastro</button></div>`;
 }
 
-function whoItem(p, st) {
+function whoItem(p, st, goals = 0) {
+  if (!st) return html`<li class="who-item">${avatar(p)}${goalBadge(goals)}<span class="who-name">${p.name}</span></li>`;
   const cls = st.kind === 'done' ? 'done' : st.kind === 'partial' ? 'partial' : 'pending';
   const mark = st.kind === 'done' ? html`<i class="tick">${ICON_TICK}</i><span class="sr">já votou</span>`
     : st.kind === 'partial' ? html`<i class="tick half" aria-hidden="true">${st.missing}</i><span class="sr">falta votar em ${st.missing}</span>`
     : html`<span class="sr">ainda não votou</span>`;
-  return html`<li class="who-item ${cls}">${avatar(p)}<span class="who-name">${p.name}</span>${mark}</li>`;
+  return html`<li class="who-item ${cls}">${avatar(p)}${goalBadge(goals)}<span class="who-name">${p.name}</span>${mark}</li>`;
 }
 function myRoundStatus(r, m) {
   if (!m) return html`<div class="mine-status"><p>Jogou hoje? Cadastre seu nome e sua foto para votar.</p>${joinActions()}</div>`;
@@ -296,14 +329,42 @@ function openRoundCard(r) {
     <div class="round-head">
       <span class="pill"><i class="dot"></i>Votação aberta</span>
       <h2>${r.title}</h2>
-      <p class="muted"><span class="count">${done} de ${parts.length}</span> já votaram. Quando o último votar, sai a tier list.</p>
+      <p class="muted"><span class="count">${done} de ${parts.length}</span> já votaram. Quando o último votar, a tier list é atualizada.</p>
     </div>
     <div class="segments" aria-hidden="true">${parts.map(p => html`<i class="${states.get(p.id).kind === 'done' ? 'on' : ''}"></i>`)}</div>
-    <ul class="who">${parts.map(p => whoItem(p, states.get(p.id)))}</ul>
+    <ul class="who">${parts.map(p => whoItem(p, states.get(p.id), goalsOf(r, p.id)))}</ul>
     ${myRoundStatus(r, me())}
     ${isAdmin() ? html`<div class="actions"><a class="btn small ghost" href="#admin">Gerenciar votação</a></div>` : ''}
   </section>`;
 }
+
+function goalList(r, parts) {
+  return html`<ul class="goal-list">${parts.map(p => {
+    const g = goalsOf(r, p.id);
+    return html`<li class="goal-row">${avatar(p)}<span class="admin-name">${p.name}</span>
+      <div class="stepper">
+        <button type="button" class="step" data-act="goal-minus" data-rid="${r.id}" data-pid="${p.id}" aria-label="Tirar um gol de ${p.name}" ${g ? '' : raw('disabled')}>−</button>
+        <span class="goal-count" aria-label="${plural(g, 'gol', 'gols')}">${g}</span>
+        <button type="button" class="step plus" data-act="goal-plus" data-rid="${r.id}" data-pid="${p.id}" aria-label="Gol de ${p.name}">+</button>
+      </div></li>`;
+  })}</ul>`;
+}
+function playingCard(r) {
+  const parts = participantsOf(r).map(pid => state.players.get(pid)).filter(Boolean);
+  const total = parts.reduce((sum, p) => sum + goalsOf(r, p.id), 0);
+  const admin = isAdmin();
+  return html`<section class="card round-open">
+    <div class="round-head">
+      <span class="pill"><i class="dot"></i>Pelada rolando</span>
+      <h2>${r.title}</h2>
+      <p class="muted"><span class="count">${plural(total, 'gol', 'gols')}</span> até agora. ${admin ? 'Toque no + quando alguém fizer gol.' : 'A votação abre quando o jogo acabar.'}</p>
+    </div>
+    ${admin ? goalList(r, parts) : html`<ul class="who">${parts.map(p => whoItem(p, null, goalsOf(r, p.id)))}</ul>`}
+    ${admin ? html`<div class="actions"><button type="button" class="btn primary big" data-act="start-voting" data-rid="${r.id}">Acabou! Abrir votação</button><a class="btn small ghost" href="#admin">Quem jogou</a></div>`
+      : me() ? '' : html`<div class="mine-status"><p>Vai votar depois do jogo? Já deixa seu cadastro pronto.</p>${joinActions()}</div>`}
+  </section>`;
+}
+const roundCard = r => (r.status === 'playing' ? playingCard(r) : openRoundCard(r));
 
 function highlightsBlock(entries) {
   const rated = entries.filter(e => e.n > 0).sort((a, b) => (b.avg - a.avg) || byName(a, b));
@@ -312,7 +373,10 @@ function highlightsBlock(entries) {
   const worst = rated.length > 1 && round1(rated[rated.length - 1].avg) < round1(best.avg) ? rated[rated.length - 1] : null;
   const hot = rated.filter(e => e.n >= 2 && e.sd > 0 && e !== best && e !== worst).sort((a, b) => (b.sd - a.sd) || byName(a, b))[0] || null;
   const spread = e => { const ks = TIER_KEYS.filter(k => e.dist[k] > 0); return ks.length > 1 ? `votos de ${ks[0]} a ${ks[ks.length - 1]}` : `todos os votos ${ks[0]}`; };
+  const maxGoals = Math.max(0, ...entries.map(e => e.goals || 0));
+  const scorers = maxGoals ? entries.filter(e => e.goals === maxGoals).sort(byName) : [];
   const cards = [
+    scorers.length ? html`<div class="hl">${avatar(scorers[0])}<span class="hl-k">${scorers.length > 1 ? 'Artilheiros' : 'Artilheiro'}</span><span class="hl-name">${scorers.map(e => e.name).join(' e ')}</span><span class="hl-v">⚽ ${plural(maxGoals, 'gol', 'gols')}</span></div>` : '',
     html`<div class="hl">${avatar(best)}<span class="hl-k">Craque da rodada</span><span class="hl-name">${best.name}</span><span class="hl-v">média ${fmtAvg(best.avg)}</span></div>`,
     hot ? html`<div class="hl">${avatar(hot)}<span class="hl-k">Mais polêmico</span><span class="hl-name">${hot.name}</span><span class="hl-v">${spread(hot)}</span></div>` : '',
     worst ? html`<div class="hl">${avatar(worst)}<span class="hl-k">Bagre da rodada</span><span class="hl-name">${worst.name}</span><span class="hl-v">média ${fmtAvg(worst.avg)}</span></div>` : '',
@@ -377,47 +441,65 @@ function viewLoading() {
   return html`<section class="result"><div class="result-title"><p class="eyebrow">Carregando</p><h2>Buscando a resenha…</h2></div>${emptyBoard()}</section>`;
 }
 
+function mainTierBlock() {
+  const closed = closedRounds();
+  if (!closed.length) return html`<section class="result"><div class="result-title"><p class="eyebrow">A tier list da pelada</p><h2>Ainda sem tier list</h2><p class="muted">Ela nasce na primeira rodada e é atualizada depois de cada uma.</p></div>${emptyBoard()}</section>`;
+  const last = closed[0];
+  const entries = mainEntries();
+  const moved = entries.filter(e => e.move).sort(byName);
+  const said = moved.map(e => e.move.kind === 'new' ? `${e.name} entrou no ${e.tier}` : `${e.name} ${e.move.kind === 'up' ? 'subiu' : 'caiu'} para ${e.tier}`);
+  return html`<section class="result">
+    <div class="result-head">
+      <div class="result-title"><p class="eyebrow">A tier list da pelada</p><h2>Tier list</h2>
+        <p class="muted">Atualizada com a rodada ${last.title} · média de ${plural(closed.length, 'rodada', 'rodadas')}</p></div>
+      <button type="button" class="btn" data-act="image-overall">${ICON_DL}Imagem da tier list</button>
+    </div>
+    ${board(groupRows(entries))}
+    ${said.length ? html`<p class="changes"><b>O que mudou nessa rodada:</b> ${said.join(', ')}.</p>` : closed.length > 1 ? html`<p class="muted small">Ninguém mudou de tier na última rodada.</p>` : ''}
+  </section>`;
+}
+function lastRoundBlock(r) {
+  const res = resultFor(r);
+  if (!res) return '';
+  return html`<section class="result">
+    <div class="result-title"><p class="eyebrow">Última rodada</p><h2>${r.title}</h2><p class="muted">${fmtDate(r.closedAt || r.createdAt)} · ${plural(num(res.voters), 'pessoa votou', 'pessoas votaram')}</p></div>
+    ${highlightsBlock(resultEntries(r))}
+    <a class="more" href="#rodada-${r.id}">Ver os votos dessa rodada</a>
+  </section>`;
+}
 function viewHome() {
   const m = me();
-  const open = currentOpenRound();
+  const open = currentRound();
   const last = closedRounds()[0];
   const blocks = [];
   if (!state.players.size) blocks.push(html`<section class="card"><p class="eyebrow">Como funciona</p><h2>A votação acaba com a discussão</h2>${howItWorks()}${joinActions()}</section>`);
-  if (open) blocks.push(openRoundCard(open));
-  else if (isAdmin()) blocks.push(html`<section class="card cta"><div class="round-head"><h2>Acabou a pelada?</h2><p class="muted">Abra a votação e marque quem jogou. A galera vota pelo link.</p></div><div class="actions"><button type="button" class="btn primary big" data-act="new-round" ${state.players.size < 2 ? raw('disabled') : ''}>Abrir votação</button></div></section>`);
+  if (open) blocks.push(roundCard(open));
+  else if (isAdmin()) blocks.push(html`<section class="card cta"><div class="round-head"><h2>Vai ter pelada?</h2><p class="muted">Comece a rodada para contar os gols. Quando o jogo acabar, você abre a votação.</p></div><div class="actions"><button type="button" class="btn primary big" data-act="new-round" ${state.players.size < 2 ? raw('disabled') : ''}>Começar pelada</button></div></section>`);
   else if (!m && state.players.size) blocks.push(html`<section class="card"><h2>Você joga nessa pelada?</h2><p class="muted">Cadastre seu nome e sua foto. Depois do jogo, a votação aparece aqui.</p>${joinActions()}</section>`);
   else if (state.players.size) blocks.push(html`<section class="card"><h2>Nenhuma votação aberta</h2><p class="muted">Depois do jogo, o administrador abre a votação e ela aparece aqui.</p></section>`);
-  if (last) blocks.push(resultBlock(last, { eyebrow: 'Última tier list' }));
-  else blocks.push(html`<section class="result"><div class="result-title"><p class="eyebrow">Tier list</p><h2>Ainda sem resultado</h2><p class="muted">Ela aparece aqui quando a primeira votação terminar.</p></div>${emptyBoard()}</section>`);
+  blocks.push(mainTierBlock());
+  if (last) blocks.push(lastRoundBlock(last));
   return html`${blocks}`;
 }
 
 function viewHistory() {
-  const closed = closedRounds();
   const all = roundList();
   const top = r => resultEntries(r).filter(e => e.n).sort((a, b) => (b.avg - a.avg) || byName(a, b)).slice(0, 3);
   return html`
-  <section class="result">
-    <div class="result-head">
-      <div class="result-title"><p class="eyebrow">Todas as rodadas</p><h2>Tier list geral</h2>
-        <p class="muted">${closed.length === 1 ? 'Por enquanto, igual à única rodada encerrada. Com mais rodadas, vira a média de cada jogador.' : closed.length ? `Média de cada jogador nas ${closed.length} rodadas encerradas. Cada rodada pesa igual.` : 'Aparece depois da primeira rodada encerrada.'}</p></div>
-      ${closed.length ? html`<button type="button" class="btn" data-act="image-overall">${ICON_DL}Imagem da tier list</button>` : ''}
-    </div>
-    ${closed.length ? board(groupRows(overallEntries())) : emptyBoard()}
-  </section>
   <section class="stack">
-    <div class="section-head"><h2>Rodadas</h2><span class="muted">${plural(all.length, 'rodada', 'rodadas')}</span></div>
+    <div class="section-head"><div class="round-head"><h2>Rodadas</h2><p class="muted">Cada rodada atualiza a tier list da página inicial. Aqui fica como foi cada uma.</p></div><span class="muted">${plural(all.length, 'rodada', 'rodadas')}</span></div>
     ${all.length ? html`<ul class="rounds">${all.map(r => {
       const res = resultFor(r);
       const best = res ? top(r) : [];
-      const meta = r.status === 'open'
+      const meta = r.status === 'playing' ? `Pelada rolando · ${plural(participantsOf(r).reduce((sum, pid) => sum + goalsOf(r, pid), 0), 'gol', 'gols')}`
+        : r.status === 'open'
         ? `Votação aberta · ${participantsOf(r).filter(pid => ballotState(r, pid).kind === 'done').length} de ${participantsOf(r).length} votaram`
         : res ? [plural(num(res.voters), 'voto', 'votos'), best[0] ? `craque: ${best[0].name}` : ''].filter(Boolean).join(' · ') : 'Calculando…';
-      return html`<li><a class="round-link" href="${r.status === 'open' ? '#inicio' : '#rodada-' + r.id}">
+      return html`<li><a class="round-link" href="${r.status !== 'closed' ? '#inicio' : '#rodada-' + r.id}">
         <span class="rl-date">${fmtDay(r.createdAt)}</span>
         <span class="rl-title">${r.title}</span>
         <span class="rl-meta">${meta}</span>
-        <span class="rl-top">${r.status === 'open' ? html`<span class="pill"><i class="dot"></i>Aberta</span>` : best.map(e => avatar(e))}</span>
+        <span class="rl-top">${r.status !== 'closed' ? html`<span class="pill"><i class="dot"></i>${r.status === 'playing' ? 'Rolando' : 'Aberta'}</span>` : best.map(e => avatar(e))}</span>
       </a></li>`;
     })}</ul>` : html`<p class="muted">Nenhuma rodada ainda. Depois do jogo, o administrador abre a primeira.</p>`}
   </section>`;
@@ -435,7 +517,7 @@ function viewRoster() {
       const hist = playerHistory(p.id);
       const avg = hist.length ? hist.reduce((s, e) => s + e.avg, 0) / hist.length : null;
       const tag = m && m.id === p.id ? 'Você' : state.setup && state.setup.adminPlayer === p.id ? 'Admin' : '';
-      const inner = html`${avatar(p)}${tag ? html`<span class="tag">${tag}</span>` : ''}<span class="fig-name">${p.name}</span><span class="fig-meta">${hist.length ? `${plural(hist.length, 'rodada', 'rodadas')} · média ${fmtAvg(avg)}` : 'Ainda sem rodada'}</span><span class="fig-trail" aria-label="${hist.length ? 'Últimos tiers: ' + hist.slice(0, 5).map(e => e.tier).join(', ') : 'Sem tiers ainda'}">${hist.slice(0, 5).map(e => html`<span class="badge mini" style="${tierVar(e.tier)}">${e.tier}</span>`)}</span>`;
+      const inner = html`${avatar(p)}${tag ? html`<span class="tag">${tag}</span>` : ''}<span class="fig-name">${p.name}</span><span class="fig-meta">${[hist.length ? `${plural(hist.length, 'rodada', 'rodadas')} · média ${fmtAvg(avg)}` : 'Ainda sem rodada', totalGoals(p.id) ? `⚽ ${plural(totalGoals(p.id), 'gol', 'gols')}` : ''].filter(Boolean).join(' · ')}</span><span class="fig-trail" aria-label="${hist.length ? 'Últimos tiers: ' + hist.slice(0, 5).map(e => e.tier).join(', ') : 'Sem tiers ainda'}">${hist.slice(0, 5).map(e => html`<span class="badge mini" style="${tierVar(e.tier)}">${e.tier}</span>`)}</span>`;
       if (m && m.id === p.id) return html`<button type="button" class="fig" data-act="profile">${inner}</button>`;
       if (admin) return html`<button type="button" class="fig" data-act="admin-edit" data-pid="${p.id}">${inner}</button>`;
       return html`<div class="fig">${inner}</div>`;
@@ -447,8 +529,8 @@ function viewRound(rid) {
   const r = state.rounds.get(rid);
   const back = html`<a class="back" href="#historico">← Histórico</a>`;
   if (!r) return html`<div class="stack">${back}<section class="card"><h2>Rodada não encontrada</h2><p class="muted">Ela pode ter sido apagada.</p></section></div>`;
-  if (r.status === 'open') return html`<div class="stack">${back}${openRoundCard(r)}</div>`;
-  return html`<div class="stack">${back}${resultBlock(r, { detail: true })}</div>`;
+  if (r.status !== 'closed') return html`<div class="stack">${back}${roundCard(r)}</div>`;
+  return html`<div class="stack">${back}${resultBlock(r, { detail: true, eyebrow: 'Votos da rodada' })}</div>`;
 }
 
 /* ---------- votação ---------- */
@@ -502,6 +584,7 @@ function voteBoard(r, v) {
 function viewVote() {
   const r = currentOpenRound();
   const back = html`<a class="back" href="#inicio">← Rodada</a>`;
+  if (!r && currentRound()) return html`<div class="stack">${back}<section class="card"><h2>A pelada está rolando</h2><p class="muted">A votação abre quando o jogo acabar.</p></section></div>`;
   if (!r) return html`<div class="stack">${back}<section class="card"><h2>Nenhuma votação aberta</h2><p class="muted">Depois do jogo, o administrador abre a votação e ela aparece aqui.</p></section></div>`;
   const m = me();
   if (!m) return html`<div class="stack">${back}<section class="card"><p class="eyebrow">${r.title}</p><h2>Cadastre-se para votar</h2><p class="muted">Nome, foto e uma senha de 4 números. Leva um minuto.</p>${joinActions()}</section></div>`;
@@ -541,9 +624,24 @@ function viewAdmin() {
   }
   return html`${adminRoundSection()}${adminPlayersSection()}${adminHistorySection()}${adminLinkSection()}`;
 }
+function playedSwitch(r, p) {
+  return html`<label class="switch"><input type="checkbox" data-absent-pid="${p.id}" ${r.absent.includes(p.id) ? '' : raw('checked')}>Jogou</label>`;
+}
 function adminRoundSection() {
-  const r = currentOpenRound();
-  if (!r) return html`<section class="card cta"><div class="round-head"><p class="eyebrow">Votação</p><h2>Nenhuma votação aberta</h2><p class="muted">Depois do jogo, abra a votação e desmarque quem não jogou.</p></div><div class="actions"><button type="button" class="btn primary big" data-act="new-round" ${state.players.size < 2 ? raw('disabled') : ''}>Abrir votação</button></div></section>`;
+  const r = currentRound();
+  if (!r) return html`<section class="card cta"><div class="round-head"><p class="eyebrow">Rodada</p><h2>Nenhuma pelada rolando</h2><p class="muted">Antes do jogo, comece a rodada para contar os gols. Quando acabar, você abre a votação.</p></div><div class="actions"><button type="button" class="btn primary big" data-act="new-round" ${state.players.size < 2 ? raw('disabled') : ''}>Começar pelada</button></div></section>`;
+  if (r.status === 'playing') {
+    const parts = participantsOf(r).map(pid => state.players.get(pid)).filter(Boolean);
+    const out = playerList().filter(p => r.absent.includes(p.id));
+    return html`<section class="card">
+      <div class="round-head"><span class="pill"><i class="dot"></i>Pelada rolando</span><h2>${r.title}</h2><p class="muted">Toque no + quando alguém fizer gol. Só você vê esses botões; a galera vê os gols junto da foto.</p></div>
+      ${goalList(r, parts)}
+      <div class="actions"><button type="button" class="btn primary big" data-act="start-voting" data-rid="${r.id}">Acabou! Abrir votação</button></div>
+      <h3>Quem jogou</h3>
+      <ul class="admin-list">${playerList().map(p => html`<li class="admin-row">${avatar(p)}<span class="admin-name">${p.name}</span><span class="admin-sub">${r.absent.includes(p.id) ? 'Não jogou' : plural(goalsOf(r, p.id), 'gol', 'gols')}</span>${playedSwitch(r, p)}</li>`)}</ul>
+      ${out.length ? '' : html`<p class="muted small">Quem se cadastrar agora entra na rodada.</p>`}
+    </section>`;
+  }
   const absent = new Set(r.absent);
   const parts = participantsOf(r);
   const done = parts.filter(pid => ballotState(r, pid).kind === 'done').length;
@@ -558,9 +656,11 @@ function adminRoundSection() {
         : st.kind === 'done' ? html`<span class="admin-sub ok">Votou</span>`
         : st.kind === 'partial' ? html`<span class="admin-sub warn">Falta votar em ${st.missing}</span>`
         : html`<span class="admin-sub">Ainda não votou</span>`;
-      return html`<li class="admin-row">${avatar(p)}<span class="admin-name">${p.name}</span>${sub}<label class="switch"><input type="checkbox" data-absent-pid="${p.id}" ${out ? '' : raw('checked')}>Jogou</label></li>`;
+      return html`<li class="admin-row">${avatar(p)}<span class="admin-name">${p.name}</span>${sub}${playedSwitch(r, p)}</li>`;
     })}</ul>
     <div class="actions"><button type="button" class="btn primary" data-act="close-round" data-rid="${r.id}" ${voted ? '' : raw('disabled')}>Encerrar e montar a tier list</button></div>
+    <h3>Gols</h3>
+    ${goalList(r, parts.map(pid => state.players.get(pid)).filter(Boolean))}
   </section>`;
 }
 function adminPlayersSection() {
@@ -847,17 +947,17 @@ async function becomeAdmin() {
 }
 function openRoundSheet() {
   if (!isAdmin()) return;
-  if (currentOpenRound()) return toast('Já tem uma votação aberta.');
+  if (currentRound()) return toast('Já tem uma rodada em andamento.');
   const ps = playerList();
   openSheet(html`<form id="roundForm" class="form" novalidate>
-    <h2 id="sheetTitle">Nova votação</h2>
+    <h2 id="sheetTitle">Começar pelada</h2>
     <label class="field-label" for="rfTitle">Nome da rodada</label>
     <input class="input" id="rfTitle" maxlength="40" value="Pelada de ${fmtDay(Date.now())}">
     <div class="field-label row-between"><span>Quem jogou?</span><span id="rfCount">${ps.length} de ${ps.length}</span></div>
     <div class="check-grid">${ps.map(p => html`<label class="check"><input type="checkbox" name="p" value="${p.id}" checked>${avatar(p, 'sm')}<span>${p.name}</span></label>`)}</div>
-    <p class="hint">Quem se cadastrar depois de aberta a votação entra na rodada sozinho.</p>
+    <p class="hint">Durante o jogo você conta os gols. Quando acabar, toca em "Abrir votação". Quem se cadastrar depois entra na rodada sozinho.</p>
     <p class="form-error" id="rfError" hidden></p>
-    <div class="sheet-actions"><button type="button" class="btn ghost" data-act="close-sheet">Cancelar</button><button type="submit" class="btn primary">Abrir votação</button></div>
+    <div class="sheet-actions"><button type="button" class="btn ghost" data-act="close-sheet">Cancelar</button><button type="submit" class="btn primary">Começar</button></div>
   </form>`);
 }
 function updateRfCount() {
@@ -868,23 +968,40 @@ async function saveRound(form) {
   if (!isAdmin()) return;
   const played = new Set($$('input[name=p]:checked', form).map(i => i.value));
   if (played.size < 2) return showErr('#rfError', 'Marque pelo menos 2 jogadores.');
-  if (currentOpenRound()) { closeSheet(); return toast('Já tem uma votação aberta.'); }
+  if (currentRound()) { closeSheet(); return toast('Já tem uma rodada em andamento.'); }
   const title = String(form.querySelector('#rfTitle').value || '').trim().replace(/\s+/g, ' ').slice(0, 40) || `Pelada de ${fmtDay(Date.now())}`;
   const absent = playerList().map(p => p.id).filter(pid => !played.has(pid));
   const rid = newId('r');
   setBusy(true);
-  const res = await attempt(() => F.setDoc(F.doc(F.db, 'rounds', rid), { title, status: 'open', createdAt: Date.now(), absent, closedAt: null, closedBy: null, participants: null, result: null }));
+  const res = await attempt(() => F.setDoc(F.doc(F.db, 'rounds', rid), { title, status: 'playing', createdAt: Date.now(), absent, goals: {}, closedAt: null, closedBy: null, participants: null, result: null }));
   setBusy(false);
   if (!res.ok) return showErr('#rfError', writeMessage(res.error));
   closeSheet();
   go('inicio');
-  toast('Votação aberta! Mande o link no grupo.');
+  toast('Pelada começou! Conte os gols por aqui.');
 }
 async function toggleAbsent(input) {
-  const r = currentOpenRound(); if (!r || !isAdmin()) return;
+  const r = currentRound(); if (!r || !isAdmin()) return;
   const pid = input.dataset.absentPid, played = input.checked;
   const res = await attempt(() => F.updateDoc(F.doc(F.db, 'rounds', r.id), { absent: played ? F.arrayRemove(pid) : F.arrayUnion(pid) }));
   if (!res.ok) { input.checked = !played; toast(writeMessage(res.error)); }
+}
+async function changeGoal(rid, pid, delta) {
+  const r = state.rounds.get(rid);
+  if (!r || r.status === 'closed' || !isAdmin() || !state.players.has(pid)) return;
+  if (delta < 0 && goalsOf(r, pid) <= 0) return;
+  const res = await attempt(() => F.updateDoc(F.doc(F.db, 'rounds', rid), { ['goals.' + pid]: F.increment(delta) }));
+  if (!res.ok) toast(writeMessage(res.error));
+}
+async function startVoting(rid) {
+  const r = state.rounds.get(rid);
+  if (!r || r.status !== 'playing' || !isAdmin()) return;
+  setBusy(true);
+  const res = await attempt(() => F.updateDoc(F.doc(F.db, 'rounds', rid), { status: 'open' }));
+  setBusy(false);
+  if (!res.ok) return toast(writeMessage(res.error));
+  go('inicio');
+  toast('Votação aberta! Mande o link no grupo.');
 }
 async function closeRoundAdmin(rid) {
   const r = state.rounds.get(rid), m = me();
@@ -901,12 +1018,12 @@ async function closeRoundAdmin(rid) {
   const res = await attempt(() => F.updateDoc(F.doc(F.db, 'rounds', rid), { status: 'closed', closedAt: Date.now(), closedBy: m.id, participants: parts, result }));
   setBusy(false);
   if (!res.ok) return toast(writeMessage(res.error));
-  go('rodada-' + rid);
-  toast('Saiu a tier list!');
+  go('inicio');
+  toast('Votação encerrada. A tier list foi atualizada!');
 }
 async function reopenRound(rid) {
   const r = state.rounds.get(rid); if (!r || !isAdmin()) return;
-  if (currentOpenRound()) return toast('Já tem uma votação aberta. Encerre ela antes de reabrir esta.');
+  if (currentRound()) return toast('Já tem uma rodada em andamento. Encerre ela antes de reabrir esta.');
   const yes = await confirmSheet({ title: `Reabrir ${r.title}?`, body: 'A tier list desta rodada some até a votação ser encerrada de novo. Os votos já dados continuam valendo e quem se cadastrou depois entra na rodada.', ok: 'Reabrir votação' });
   if (!yes) return;
   setBusy(true);
@@ -1029,7 +1146,7 @@ async function submitVote() {
     if (isAdmin()) patch.result = computeResult(live);
     const closed = await attempt(() => F.updateDoc(F.doc(F.db, 'rounds', r.id), patch));
     setBusy(false);
-    if (closed.ok) { go('rodada-' + r.id); toast('Todo mundo votou. Saiu a tier list!'); return; }
+    if (closed.ok) { go('inicio'); window.scrollTo({ top: 0 }); toast('Todo mundo votou. A tier list foi atualizada!'); return; }
   }
   setBusy(false);
   go('inicio');
@@ -1114,6 +1231,20 @@ async function drawTierPng({ title, subtitle, entries }) {
         ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
       }
       ctx.restore();
+      if (e.goals > 0) {
+        const gl = '⚽' + (e.goals > 1 ? ' ' + e.goals : '');
+        ctx.font = `800 20px ${DISPLAY}`;
+        const gw = ctx.measureText(gl).width + 14;
+        rrect(ctx, x - 6, yy - 6, gw, 28, 7); ctx.fillStyle = '#FFFFFF'; ctx.fill();
+        ctx.fillStyle = '#0F1913'; ctx.fillText(gl, x + 1, yy + 15);
+      }
+      if (e.move) {
+        const ml = e.move.kind === 'new' ? 'NOVO' : e.move.kind === 'up' ? '▲' : '▼';
+        ctx.font = `800 18px ${DISPLAY}`;
+        const mw = ctx.measureText(ml).width + 12;
+        rrect(ctx, x + CELL - mw + 6, yy - 6, mw, 26, 7); ctx.fillStyle = e.move.kind === 'down' ? '#E5484D' : '#2E9E57'; ctx.fill();
+        ctx.fillStyle = '#FFFFFF'; ctx.fillText(ml, x + CELL - mw + 12, yy + 13);
+      }
       if (e.avg != null) {
         const label = fmtAvg(e.avg);
         ctx.font = `800 21px ${DISPLAY}`;
@@ -1163,7 +1294,7 @@ function imageForRound(rid) {
 }
 function imageOverall() {
   const closed = closedRounds(); if (!closed.length) return;
-  return showImage({ title: 'Tier list geral', subtitle: `Média de ${plural(closed.length, 'rodada', 'rodadas')} · até ${fmtDate(closed[0].closedAt || closed[0].createdAt)}`, entries: overallEntries(), filename: 'tier-list-geral.png' });
+  return showImage({ title: `Depois da ${closed[0].title}`, subtitle: `Média de ${plural(closed.length, 'rodada', 'rodadas')} · ${fmtDate(closed[0].closedAt || closed[0].createdAt)}`, entries: mainEntries(), filename: `tier-list-${slug(closed[0].title)}.png` });
 }
 async function copyLink() {
   const text = location.origin + location.pathname;
@@ -1177,7 +1308,7 @@ async function copyLink() {
 
 /* ---------- eventos ---------- */
 // Ações que gravam no banco esperam a gravação anterior terminar.
-const WRITE_ACTS = new Set(['become-admin', 'close-round', 'reopen-round', 'delete-round', 'admin-unlink', 'admin-remove', 'leave-device', 'submit-vote', 'confirm-yes', 'image', 'image-overall']);
+const WRITE_ACTS = new Set(['start-voting', 'become-admin', 'close-round', 'reopen-round', 'delete-round', 'admin-unlink', 'admin-remove', 'leave-device', 'submit-vote', 'confirm-yes', 'image', 'image-overall']);
 function onClick(e) {
   const el = e.target.closest('[data-act]');
   if (!el || el.disabled) return;
@@ -1195,6 +1326,9 @@ function onClick(e) {
     case 'become-admin': becomeAdmin(); break;
     case 'new-round': openRoundSheet(); break;
     case 'close-round': closeRoundAdmin(rid); break;
+    case 'start-voting': startVoting(rid); break;
+    case 'goal-plus': changeGoal(rid, pid, 1); break;
+    case 'goal-minus': changeGoal(rid, pid, -1); break;
     case 'reopen-round': reopenRound(rid); break;
     case 'delete-round': deleteRound(rid); break;
     case 'admin-edit': openAdminPlayerSheet(pid); break;
@@ -1279,7 +1413,7 @@ function isConfigured() {
   return [c.apiKey, c.projectId, c.appId].every(v => typeof v === 'string' && v && !v.includes('COLE_AQUI'));
 }
 function syncBallotSubs() {
-  const want = new Set(roundList().filter(r => r.status === 'open' || !r.result).map(r => r.id));
+  const want = new Set(roundList().filter(r => r.status === 'open' || (r.status === 'closed' && !r.result)).map(r => r.id));
   for (const [rid, unsub] of state.ballotSubs) {
     if (!want.has(rid)) { unsub(); state.ballotSubs.delete(rid); state.ballots.delete(rid); state.ballotsFresh.delete(rid); }
   }
@@ -1321,7 +1455,8 @@ function subscribe() {
       m.set(d.id, {
         id: d.id,
         title: str(v.title, 60) || 'Rodada',
-        status: v.status === 'closed' ? 'closed' : 'open',
+        status: ['playing', 'open', 'closed'].includes(v.status) ? v.status : 'open',
+        goals: goalsMap(v.goals),
         createdAt: num(v.createdAt), closedAt: num(v.closedAt),
         absent: strList(v.absent),
         participants: Array.isArray(v.participants) ? strList(v.participants) : null,
