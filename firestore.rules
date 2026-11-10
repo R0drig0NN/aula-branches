@@ -1,0 +1,151 @@
+rules_version = '2';
+
+// Regras de segurança da Tier List da Pelada.
+// Cole este arquivo inteiro em: Firebase console > Firestore Database > Regras > Publicar.
+//
+// Resumo:
+// - Qualquer pessoa com o link vê jogadores, rodadas e a tier list.
+// - Cada um se cadastra com uma senha de 4 números e só mexe no próprio cadastro e no próprio voto.
+// - Para usar outro aparelho, a pessoa escolhe o nome e digita a senha (coleção "claims").
+// - A primeira pessoa que tocar em "Tornar-me administrador" vira o admin (documento config/setup).
+// - Só o admin abre, encerra, reabre e apaga rodadas e edita ou remove jogadores.
+// - Quem dá o último voto pode encerrar a rodada, mas não consegue escrever o resultado.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function playerPath(pid) {
+      return /databases/$(database)/documents/players/$(pid);
+    }
+
+    // O aparelho de quem pediu (request.auth.uid) está ligado a este jogador?
+    function owns(pid) {
+      return signedIn()
+        && pid is string
+        && exists(playerPath(pid))
+        && request.auth.uid in get(playerPath(pid)).data.owners;
+    }
+
+    function isAdmin() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/config/setup)
+        && owns(get(/databases/$(database)/documents/config/setup).data.adminPlayer);
+    }
+
+    function validName(n) {
+      return n is string && n.size() >= 1 && n.size() <= 24;
+    }
+
+    function validPhoto(p) {
+      return p == null
+        || (p is string && p.size() <= 200000
+            && p.matches('data:image/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+'));
+    }
+
+    function validPin(p) {
+      return p is string && p.matches('[0-9]{4}');
+    }
+
+    // Entrar com um cadastro que já existe: no mesmo lote, o aparelho grava claims/{uid}
+    // com o jogador e a senha, e se adiciona à lista "owners" desse jogador.
+    function claimOk(pid) {
+      let claim = getAfter(/databases/$(database)/documents/claims/$(request.auth.uid)).data;
+      return signedIn()
+        && claim.pid == pid
+        && claim.pin == get(/databases/$(database)/documents/pins/$(pid)).data.pin
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['owners'])
+        && request.resource.data.owners == resource.data.owners.concat([request.auth.uid])
+        && request.resource.data.owners.size() <= 10;
+    }
+
+    match /config/setup {
+      allow read: if true;
+      // Só dá para criar uma vez. Para trocar o admin, apague este documento no console.
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['adminPlayer', 'createdAt'])
+        && owns(request.resource.data.adminPlayer);
+      allow update, delete: if false;
+    }
+
+    match /players/{pid} {
+      allow read: if true;
+
+      // Cadastro: o jogador nasce ligado a este aparelho, junto com a senha (pins/{pid}).
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['name', 'photo', 'owners', 'createdAt'])
+        && validName(request.resource.data.name)
+        && validPhoto(request.resource.data.get('photo', null))
+        && request.resource.data.owners == [request.auth.uid]
+        && existsAfter(/databases/$(database)/documents/pins/$(pid));
+
+      allow update: if (
+          (owns(pid) || isAdmin())
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'photo', 'owners'])
+          && validName(request.resource.data.name)
+          && validPhoto(request.resource.data.get('photo', null))
+          && request.resource.data.owners is list
+          && request.resource.data.owners.size() <= 10
+          // O próprio jogador só pode se desligar deste aparelho; o admin pode desligar todos.
+          && (isAdmin()
+              || request.resource.data.owners == resource.data.owners
+              || request.resource.data.owners == resource.data.owners.removeAll([request.auth.uid]))
+        )
+        || claimOk(pid);
+
+      allow delete: if isAdmin();
+    }
+
+    // A senha de cada jogador. Ninguém lê; as regras só comparam.
+    match /pins/{pid} {
+      allow read: if false;
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['pin'])
+        && validPin(request.resource.data.pin)
+        && (isAdmin()
+            || (!exists(playerPath(pid))
+                && getAfter(playerPath(pid)).data.owners == [request.auth.uid]));
+      allow update: if signedIn()
+        && request.resource.data.keys().hasOnly(['pin'])
+        && validPin(request.resource.data.pin)
+        && (owns(pid) || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    match /claims/{uid} {
+      allow read, delete: if signedIn() && request.auth.uid == uid;
+      allow create, update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['pid', 'pin', 'at'])
+        && request.resource.data.pid is string
+        && validPin(request.resource.data.pin);
+    }
+
+    match /rounds/{rid} {
+      allow read: if true;
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin()
+        || (resource.data.status == 'open'
+            && request.resource.data.status == 'closed'
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['status', 'closedAt', 'closedBy', 'participants'])
+            && owns(request.resource.data.closedBy));
+
+      // Um voto por jogador e por rodada, só enquanto a rodada está aberta.
+      match /ballots/{voter} {
+        allow read: if true;
+        allow create, update: if owns(voter)
+          && get(/databases/$(database)/documents/rounds/$(rid)).data.status == 'open'
+          && !get(/databases/$(database)/documents/rounds/$(rid)).data.get('absent', []).hasAny([voter])
+          && request.resource.data.keys().hasOnly(['voter', 'ratings', 'updatedAt'])
+          && request.resource.data.voter == voter
+          && request.resource.data.ratings is map
+          && request.resource.data.ratings.size() <= 80
+          && !request.resource.data.ratings.keys().hasAny([voter])
+          && request.resource.data.ratings.values().hasOnly(['S', 'A', 'B', 'C', 'D']);
+        allow delete: if isAdmin();
+      }
+    }
+  }
+}
