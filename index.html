@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Tier List da Pelada</title>
+  <meta name="description" content="Depois do jogo, cada um coloca os outros em S, A, B, C ou D. A média dos votos vira a tier list da rodada.">
+  <meta property="og:title" content="Tier List da Pelada">
+  <meta property="og:description" content="Se cadastra, vota em quem jogou e vê quem foi monstro e quem foi bagre.">
+  <meta property="og:type" content="website">
+  <meta name="theme-color" content="#1F7240">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23E95656'/%3E%3Ctext x='32' y='47' font-family='Arial Black,Arial,sans-serif' font-weight='900' font-size='40' text-anchor='middle' fill='%231A1712'%3ES%3C/text%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,600;0,700;0,800;1,800&family=Barlow:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="mast">
+    <svg class="mast-lines" viewBox="0 0 300 300" aria-hidden="true" focusable="false">
+      <g><circle cx="150" cy="150" r="92"></circle><line x1="150" y1="-10" x2="150" y2="310"></line></g>
+      <circle class="spot" cx="150" cy="150" r="6"></circle>
+    </svg>
+    <div class="wrap mast-inner">
+      <div class="mast-top">
+        <p class="mast-meta" id="mastMeta">Votação pós-jogo</p>
+        <div id="meChip" class="me-slot"></div>
+      </div>
+      <h1 class="mast-title">Tier List da Pelada</h1>
+      <nav class="tabs" aria-label="Seções">
+        <a href="#inicio" data-tab="inicio">Rodada</a>
+        <a href="#historico" data-tab="historico">Histórico</a>
+        <a href="#elenco" data-tab="elenco">Elenco</a>
+        <a href="#admin" data-tab="admin" id="adminTab" hidden>Admin</a>
+      </nav>
+    </div>
+  </header>
+  <main class="wrap">
+    <div id="banner" class="banners"></div>
+    <div id="view" class="view">
+      <noscript><p class="note">Ative o JavaScript para usar a tier list.</p></noscript>
+    </div>
+  </main>
+  <footer class="wrap foot">
+    <a href="#admin" class="foot-link" id="adminLink">Área do administrador</a>
+  </footer>
+  <div id="sheet" class="sheet-host" hidden></div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
