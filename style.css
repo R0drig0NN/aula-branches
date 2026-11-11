@@ -350,3 +350,11 @@ button.fig:hover { border-color: var(--muted); }
 .scorer-row .admin-name { grid-column: 3; grid-row: 1; }
 .scorer-row .admin-sub { grid-column: 3; grid-row: 2; }
 .scorer-goals { grid-column: 4; grid-row: 1 / span 2; font: 800 26px/1 var(--font-display); font-variant-numeric: tabular-nums; }
+
+/* Overall (OVR) */
+.ovr { position: absolute; top: 14px; right: 14px; display: grid; justify-items: center; min-width: 46px; padding: 4px 6px 3px; border-radius: 8px; background: var(--tier-00); color: var(--tier-ink); box-shadow: 0 1px 4px rgba(0, 0, 0, .3); }
+.ovr b { font: 800 24px/1 var(--font-display); }
+.ovr small { font: 800 9px/1 var(--font-display); letter-spacing: .12em; }
+.ovr-delta { justify-self: start; margin: 8px 2px 0; padding: 1px 7px; border-radius: 999px; font: 700 12px/1.4 var(--font-display); letter-spacing: .03em; }
+.ovr-delta.up { background: var(--accent-soft); color: var(--accent-strong); }
+.ovr-delta.down { background: var(--note-bg); color: var(--danger); }

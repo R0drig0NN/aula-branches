@@ -32,7 +32,7 @@ const state = {
   got: { players: false, rounds: false, setup: false },
   vote: null, form: null, image: null, busy: false,
   sheetClose: null, confirmYes: null, lastFocus: null,
-  filling: new Set(), canShareFiles: false,
+  filling: new Set(), canShareFiles: false, ver: 0,
 };
 let F = null; // funções do Firestore + auth + db, depois que o Firebase carrega
 
@@ -268,9 +268,42 @@ function mainEntries() {
       if (!b) move = { kind: 'new' };
       else if (rankScore(e.tier) !== rankScore(b.tier)) move = { kind: rankScore(e.tier) > rankScore(b.tier) ? 'up' : 'down', from: b.tier };
     }
-    return { ...e, move };
+    const o = overallRatings().get(e.id);
+    return { ...e, move, ovr: o ? o.ovr : OVR_START, sub: `OVR ${o ? o.ovr : OVR_START}` };
   });
 }
+
+// Overall, como no FIFA: todo mundo começa com 70. Depois de cada rodada encerrada, quem jogou
+// ganha ou perde conforme a faixa em que ficou na tier list depois daquela rodada.
+const OVR_START = 70;
+const OVR_DELTA = { '00': 3, S: 2, A: 1, B: 0, C: -1, D: -2 };
+let ovrCache = { ver: -1, map: null };
+function overallRatings() {
+  if (ovrCache.map && ovrCache.ver === state.ver) return ovrCache.map;
+  const map = new Map();
+  const closed = closedRounds().slice().reverse(); // da mais antiga para a mais nova
+  for (let k = 0; k < closed.length; k++) {
+    const r = closed[k];
+    const played = new Set(resultEntries(r).filter(e => e.n > 0).map(e => e.id));
+    if (!played.size) continue;
+    for (const e of withBest(overallEntries(closed.slice(0, k + 1)), r)) {
+      if (!played.has(e.id)) continue;
+      const cur = map.get(e.id) || { ovr: OVR_START, delta: 0, round: null };
+      const d = OVR_DELTA[e.tier] || 0;
+      cur.ovr = Math.max(1, Math.min(99, cur.ovr + d));
+      cur.delta = d; cur.round = r.id;
+      map.set(e.id, cur);
+    }
+  }
+  ovrCache = { ver: state.ver, map };
+  return map;
+}
+const ovrOf = pid => { const o = overallRatings().get(pid); return o ? o.ovr : OVR_START; };
+function lastDelta(pid) {
+  const o = overallRatings().get(pid), last = closedRounds()[0];
+  return o && last && o.round === last.id ? o.delta : null;
+}
+const signed = d => (d > 0 ? `+${d}` : d < 0 ? `−${-d}` : '0');
 function groupRows(entries) {
   const rows = { '00': [], S: [], A: [], B: [], C: [], D: [] };
   for (const e of entries) if (e.tier && rows[e.tier]) rows[e.tier].push(e);
@@ -525,6 +558,7 @@ function mainTierBlock() {
     </div>
     ${board(groupRows(entries))}
     ${said.length ? html`<p class="changes"><b>O que mudou nessa rodada:</b> ${said.join(', ')}.</p>` : closed.length > 1 ? html`<p class="muted small">Ninguém mudou de tier na última rodada.</p>` : ''}
+    <p class="rule"><b>OVR</b> é o overall: todo mundo começa com 70 e, a cada rodada que joga, ganha ou perde conforme a faixa em que ficou: <b>00 +3 · S +2 · A +1 · B 0 · C −1 · D −2</b>. Veja o de todo mundo no Elenco.</p>
   </section>`;
 }
 function lastRoundBlock(r) {
@@ -607,18 +641,19 @@ function viewHistory() {
 }
 
 function viewRoster() {
-  const ps = playerList();
+  const ps = playerList().sort((a, b) => (ovrOf(b.id) - ovrOf(a.id)) || byName(a, b));
   const m = me(), admin = isAdmin();
   return html`<section class="stack">
     <div class="section-head">
-      <div class="round-head"><h2>Elenco</h2><p class="muted">${plural(ps.length, 'jogador', 'jogadores')}${m ? '. Toque no seu cartão para mudar nome, foto ou senha.' : '.'}</p></div>
+      <div class="round-head"><h2>Elenco</h2><p class="muted">${plural(ps.length, 'jogador', 'jogadores')}, do maior overall para o menor${m ? '. Toque no seu cartão para mudar nome, foto ou senha.' : '.'}</p></div>
       ${m ? '' : joinActions(false)}
     </div>
     ${ps.length ? html`<div class="roster">${ps.map(p => {
       const hist = playerHistory(p.id);
       const avg = hist.length ? hist.reduce((s, e) => s + e.avg, 0) / hist.length : null;
       const tag = m && m.id === p.id ? 'Você' : state.setup && state.setup.adminPlayer === p.id ? 'Admin' : '';
-      const inner = html`${avatar(p)}${tag ? html`<span class="tag">${tag}</span>` : ''}<span class="fig-name">${p.name}</span><span class="fig-meta">${[hist.length ? `${plural(hist.length, 'rodada', 'rodadas')} · média ${fmtAvg(avg)}` : 'Ainda sem rodada', totalGoals(p.id) ? `⚽ ${plural(totalGoals(p.id), 'gol', 'gols')}` : ''].filter(Boolean).join(' · ')}</span><span class="fig-trail" aria-label="${hist.length ? 'Últimos tiers: ' + hist.slice(0, 5).map(e => e.tier).join(', ') : 'Sem tiers ainda'}">${hist.slice(0, 5).map(e => html`<span class="badge mini" style="${tierVar(e.tier)}">${e.tier}</span>`)}</span>`;
+      const d = lastDelta(p.id);
+      const inner = html`${avatar(p)}${tag ? html`<span class="tag">${tag}</span>` : ''}<span class="ovr" aria-label="overall ${ovrOf(p.id)}"><b>${ovrOf(p.id)}</b><small>OVR</small></span>${d ? html`<span class="ovr-delta ${d > 0 ? 'up' : 'down'}">${signed(d)} na última</span>` : ''}<span class="fig-name">${p.name}</span><span class="fig-meta">${[hist.length ? `${plural(hist.length, 'rodada', 'rodadas')} · média ${fmtAvg(avg)}` : 'Ainda sem rodada', totalGoals(p.id) ? `⚽ ${plural(totalGoals(p.id), 'gol', 'gols')}` : ''].filter(Boolean).join(' · ')}</span><span class="fig-trail" aria-label="${hist.length ? 'Últimos tiers: ' + hist.slice(0, 5).map(e => e.tier).join(', ') : 'Sem tiers ainda'}">${hist.slice(0, 5).map(e => html`<span class="badge mini" style="${tierVar(e.tier)}">${e.tier}</span>`)}</span>`;
       if (m && m.id === p.id) return html`<button type="button" class="fig" data-act="profile">${inner}</button>`;
       if (admin) return html`<button type="button" class="fig" data-act="admin-edit" data-pid="${p.id}">${inner}</button>`;
       return html`<div class="fig">${inner}</div>`;
@@ -1387,6 +1422,13 @@ async function drawTierPng({ title, subtitle, entries }) {
         rrect(ctx, x + CELL - mw + 6, yy - 6, mw, 26, 7); ctx.fillStyle = e.move.kind === 'down' ? '#E5484D' : '#2E9E57'; ctx.fill();
         ctx.fillStyle = '#FFFFFF'; ctx.fillText(ml, x + CELL - mw + 12, yy + 13);
       }
+      if (e.ovr) {
+        const ol = String(e.ovr);
+        ctx.font = `800 22px ${DISPLAY}`;
+        const ow = ctx.measureText(ol).width + 14;
+        rrect(ctx, x - 6, yy + CELL - 22, ow, 28, 7); ctx.fillStyle = '#D4A017'; ctx.fill();
+        ctx.fillStyle = '#1A1712'; ctx.fillText(ol, x + 1, yy + CELL - 1);
+      }
       if (e.avg != null) {
         const label = fmtAvg(e.avg);
         ctx.font = `800 21px ${DISPLAY}`;
@@ -1401,7 +1443,7 @@ async function drawTierPng({ title, subtitle, entries }) {
     y += h + ROWGAP;
   });
   ctx.fillStyle = '#93A99A'; ctx.font = `600 19px ${BODY}`;
-  ctx.fillText('Cada voto vale S 5 · A 4 · B 3 · C 2 · D 1. O tier sai da média. O 00 é o mais escolhido como melhor.', PAD, H - FOOT / 2 + 6);
+  ctx.fillText(`Cada voto vale S 5 · A 4 · B 3 · C 2 · D 1. O tier sai da média. O 00 é o mais escolhido como melhor.${entries.some(e => e.ovr) ? ' Em dourado, o overall.' : ''}`, PAD, H - FOOT / 2 + 6);
   return new Promise((res, rej) => c.toBlob(b => (b ? res(b) : rej(new Error('toBlob'))), 'image/png'));
 }
 async function showImage(opts) {
@@ -1567,7 +1609,7 @@ function syncBallotSubs() {
     const unsub = F.onSnapshot(F.collection(F.db, 'rounds', rid, 'ballots'), snap => {
       const m = new Map();
       for (const d of snap.docs) { const b = d.data(); if (b && b.ratings && typeof b.ratings === 'object') m.set(d.id, { voter: d.id, ratings: b.ratings, revelation: typeof b.revelation === 'string' ? b.revelation : null, best: typeof b.best === 'string' ? b.best : null, keeper: typeof b.keeper === 'string' ? b.keeper : null }); }
-      state.ballots.set(rid, m);
+      state.ballots.set(rid, m); state.ver++;
       if (!snap.metadata.fromCache) state.ballotsFresh.add(rid);
       maybeFillResults();
       render();
@@ -1590,7 +1632,7 @@ function subscribe() {
       if (!name) continue;
       m.set(d.id, { id: d.id, name, photo: typeof v.photo === 'string' && v.photo.startsWith('data:image/') ? v.photo : null, owners: strList(v.owners), createdAt: num(v.createdAt) });
     }
-    state.players = m; state.got.players = true;
+    state.players = m; state.got.players = true; state.ver++;
     maybeFillResults(); render();
   }, readFailed);
   F.onSnapshot(F.collection(F.db, 'rounds'), snap => {
@@ -1608,7 +1650,7 @@ function subscribe() {
         result: v.result && typeof v.result === 'object' && v.result.players && typeof v.result.players === 'object' ? v.result : null,
       });
     }
-    state.rounds = m; state.got.rounds = true;
+    state.rounds = m; state.got.rounds = true; state.ver++;
     syncBallotSubs(); maybeFillResults(); render();
   }, readFailed);
   F.onSnapshot(F.doc(F.db, 'config', 'setup'), snap => {
