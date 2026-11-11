@@ -276,6 +276,8 @@ function mainEntries() {
 // Overall, como no FIFA: todo mundo começa com 70. Depois de cada rodada encerrada, quem jogou
 // ganha ou perde conforme a faixa em que ficou na tier list depois daquela rodada.
 const OVR_START = 70;
+const OVR_MIN = 40;
+const OVR_MAX = 99;
 const OVR_DELTA = { '00': 3, S: 2, A: 1, B: 0, C: -1, D: -2 };
 let ovrCache = { ver: -1, map: null };
 function overallRatings() {
@@ -290,7 +292,7 @@ function overallRatings() {
       if (!played.has(e.id)) continue;
       const cur = map.get(e.id) || { ovr: OVR_START, delta: 0, round: null };
       const d = OVR_DELTA[e.tier] || 0;
-      cur.ovr = Math.max(1, Math.min(99, cur.ovr + d));
+      cur.ovr = Math.max(OVR_MIN, Math.min(OVR_MAX, cur.ovr + d));
       cur.delta = d; cur.round = r.id;
       map.set(e.id, cur);
     }
@@ -558,7 +560,7 @@ function mainTierBlock() {
     </div>
     ${board(groupRows(entries))}
     ${said.length ? html`<p class="changes"><b>O que mudou nessa rodada:</b> ${said.join(', ')}.</p>` : closed.length > 1 ? html`<p class="muted small">Ninguém mudou de tier na última rodada.</p>` : ''}
-    <p class="rule"><b>OVR</b> é o overall: todo mundo começa com 70 e, a cada rodada que joga, ganha ou perde conforme a faixa em que ficou: <b>00 +3 · S +2 · A +1 · B 0 · C −1 · D −2</b>. Veja o de todo mundo no Elenco.</p>
+    <p class="rule"><b>OVR</b> é o overall: todo mundo começa com 70 e, a cada rodada que joga, ganha ou perde conforme a faixa em que ficou: <b>00 +3 · S +2 · A +1 · B 0 · C −1 · D −2</b>. O máximo é 99 e o mínimo é 40. Veja o de todo mundo no Elenco.</p>
   </section>`;
 }
 function lastRoundBlock(r) {
