@@ -44,7 +44,10 @@ O GitHub Pages grátis só publica repositórios públicos.
 - **Antes do jogo:** o admin toca em **Começar pelada** e desmarca quem não vai jogar.
 - **Durante o jogo:** o admin toca no **+** do jogador a cada gol (e no **−** se errar). Só o admin vê esses botões; todo mundo vê os gols junto da foto de cada um.
 - **Depois do jogo:** o admin toca em **Acabou! Abrir votação**.
-- **A galera:** abre o link, se cadastra (só na primeira vez) e vota. No fim do voto, cada um escolhe **o melhor do futebol** e a **revelação da rodada**. O mais escolhido como melhor vira o **00**, a faixa acima do S, que só tem um jogador; a revelação aparece nos destaques. Quem se cadastra com a votação aberta já entra na rodada.
+- **A galera:** abre o link, se cadastra (só na primeira vez) e vota. No fim do voto, cada um escolhe **o melhor do futebol**, o **melhor goleiro** e a **revelação da rodada**. O mais escolhido como melhor vira o **00**, a faixa acima do S, que só tem um jogador; goleiro e revelação aparecem nos destaques.
+- **Time da rodada:** o goleiro mais votado, o melhor do futebol mais votado e os três com as maiores médias da rodada.
+- **Artilharia:** a aba Artilharia soma os gols de todas as rodadas, com pódio (1º, 2º e 3º) e a lista completa.
+- **Overall (OVR), como no FIFA:** todo mundo começa com 70. Depois de cada rodada que a pessoa jogou, ela ganha ou perde conforme a faixa em que ficou na tier list: 00 +3, S +2, A +1, B 0, C −1, D −2. O overall vai de 40 a 99. O Elenco fica em ordem de overall. Quem se cadastra com a votação aberta já entra na rodada.
 - **O resultado:** quando o último votar, a tier list da página inicial é atualizada para todo mundo. Se alguém sumir, o admin pode encerrar antes. Os votos de cada rodada ficam na aba **Histórico**.
 - **A imagem:** no resultado, toque em **Imagem da tier list** para baixar ou compartilhar.
 
